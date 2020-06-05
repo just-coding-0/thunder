@@ -1,4 +1,8 @@
-package thunder
+// Copyright 2020 Gin Core Team. All rights reserved.
+// Use of this source code is governed by a MIT style
+// license that can be found in the LICENSE file.
+
+package bytesconv
 
 import (
 	"reflect"
@@ -16,10 +20,4 @@ func StringToBytes(s string) (b []byte) {
 // BytesToString converts byte slice to string without a memory allocation.
 func BytesToString(b []byte) string {
 	return *(*string)(unsafe.Pointer(&b))
-}
-
-func assert1(guard bool, text string) {
-	if !guard {
-		panic(text)
-	}
 }

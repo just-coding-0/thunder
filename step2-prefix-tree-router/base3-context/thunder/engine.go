@@ -1,18 +1,16 @@
 package thunder
 
 import (
-	"fmt"
 	"net/http"
+	"strings"
 )
 
 type Engine struct {
-	router map[string]HandlersChain
-	trees  methodTrees
+	trees methodTrees
 }
 
 func New() *Engine {
 	return &Engine{
-		router: make(map[string]HandlersChain),
 	}
 }
 
@@ -29,46 +27,102 @@ type IRoutes interface {
 
 // ServeHTTP conforms to the http.Handler interface.
 func (engine *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	engine.handleHTTPRequest(w, req)
+	f := responseWriter{
+		ResponseWriter: w,
+		size:           0,
+		status:         0,
+	}
+	context := newContext(req, f)
+	context.fullPath = req.URL.Path
+	engine.handleHTTPRequest(context)
 }
 
-func (engine *Engine) handleHTTPRequest(w http.ResponseWriter, req *http.Request) {
-	method := req.Method
-	path := req.URL.Path
+func (engine *Engine) handleHTTPRequest(c *Context) {
+	method := strings.ToUpper(c.Request.Method)
+	path := c.Request.URL.Path
 	tree := engine.trees.get(method)
 	if tree == nil {
-		fmt.Fprintf(w, " handler not found ")
+		c.JSON(http.StatusNotFound, "404 not found")
 		return
 	}
+
+	/*
+		1.当前节点是wildChild 那么必定只有一个子节点  类型是参数或者是catchAll
+		/v1/:id/hello
+		/v1/:id/hello/ 这是两个接口
+
+	*/
+
 walk:
 	for {
+		i := longestCommonPrefix(tree.path, path)
 
-		i := longestCommonPrefix(path, tree.path)
-		path = path[i:]
-
-		// 如果路径相等,执行
-		if len(path) == 0 && tree.fullPath == req.URL.Path {
-			for _,v:=range tree.handlers{
-				v(w,req)
-			}
+		// 已经找到节点
+		if tree.path == path {
+			c.handlers = tree.handlers
+			c.Next()
 			return
 		}
 
-		// 寻找子节点
-		for idx := range tree.indices {
-			if tree.indices[idx] == path[0] {
-				tree = tree.children[idx]
-				continue walk
-			}
+		path = path[i:]
+
+		if tree.wildChild {
+			tree = tree.children[0]
+			continue walk
 		}
 
-		break
+		//  /v1/:id
+		//  /v1/:id/
+
+		if tree.nType == param {
+			idx := strings.Index(path, "/")
+			if idx > 0 {
+				c.Keys[tree.path[1:]] = path[:idx]
+				path = path[idx:]
+				if len(tree.children) == 0 {
+					c.JSON(http.StatusNotFound, "404 not found")
+					return
+				}
+				tree = tree.children[0]
+				continue walk
+			}
+
+			c.Keys[tree.path[1:]] = path
+			c.handlers = tree.handlers
+			c.Next()
+		}
+
+		// 如果是catchAll
+		if tree.nType == catchAll {
+			c.Keys[tree.path[2:]] = path
+			if tree.handlers == nil {
+				c.JSON(http.StatusNotFound, "404 not found")
+				return
+			}
+
+			c.handlers = tree.handlers
+			c.Next()
+			return
+		}
+
+		if tree.nType <= root {
+
+			for idx := range tree.indices {
+				if path[0] == tree.indices[idx] {
+					tree = tree.children[idx]
+					continue walk
+				}
+			}
+		}
+		c.JSON(http.StatusNotFound, "404 not found")
+		return
 	}
 
-	fmt.Fprintf(w, " handler not found ")
+	c.JSON(http.StatusNotFound, "404 not found")
+
 }
 
-type HandlerFunc func(writer http.ResponseWriter, request *http.Request)
+type HandlerFunc func(content *Context)
 
 type HandlersChain []HandlerFunc
 
@@ -80,6 +134,21 @@ func (engine *Engine) POST(relativePath string, handlers ...HandlerFunc) IRoutes
 // GET is a shortcut for router.Handle("GET", path, handle).
 func (engine *Engine) GET(relativePath string, handlers ...HandlerFunc) IRoutes {
 	return engine.handle(http.MethodGet, relativePath, handlers)
+}
+
+func (engine *Engine) Print() {
+
+	for _, v := range engine.trees {
+		println(v.root.path, v.root.fullPath)
+		for _, v1 := range v.root.children {
+			println(v1.path, v1.fullPath)
+
+			for _, v2 := range v1.children {
+				println(v2.path, v2.fullPath)
+			}
+		}
+
+	}
 }
 
 // DELETE is a shortcut for router.Handle("DELETE", path, handle).
