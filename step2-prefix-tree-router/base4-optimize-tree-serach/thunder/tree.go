@@ -6,9 +6,9 @@ package thunder
 
 import (
 	"github.com/just-coding-0/thunder/internal/bytesconv"
+	"net/url"
 	"strings"
 )
-
 
 type nodeType uint8
 
@@ -234,7 +234,6 @@ func (n *node) insertChild(path string, fullPath string, handlers HandlersChain)
 			panic("no / before catch-all in path '" + fullPath + "'")
 		}
 
-
 		n.path = path[:i]
 
 		child := &node{
@@ -265,21 +264,160 @@ func (n *node) insertChild(path string, fullPath string, handlers HandlersChain)
 	n.fullPath = fullPath
 }
 
-func min(a, b int) int {
-	if a <= b {
-		return a
-	}
-	return b
+type nodeValue struct {
+	handlers HandlersChain
+	params   *Params
+	tsr      bool
+	fullPath string
 }
 
-// 最长公共前缀
-func longestCommonPrefix(a, b string) int {
-	i := 0
-	max := min(len(a), len(b))
-	for i < max && a[i] == b[i] {
-		i++
+func (n *node) getValue(path string, params *Params, unescape bool) (value nodeValue) {
+walk:
+	for {
+		prefix := n.path
+		if len(path) > len(prefix) { // 如果path大于前缀
+			if path[:len(prefix)] == prefix { // 前缀相等,直接寻找下一个子节点
+				path = path[len(prefix):]
+				if !n.wildChild { // tip: 如果当前节点不是通配符节点,则使用索引进行匹配
+					idxc := path[0]
+					for i, c := range []byte(n.indices) {
+						if c == idxc {
+							n = n.children[i]
+							continue walk
+						}
+					}
+
+					// not found 直接返回
+					value.tsr = (path == "/" && n.handlers != nil)
+					return
+				}
+
+				// 使用通配符子节点进行匹配
+				n = n.children[0]
+				switch n.nType {
+				case param:
+					// tip: 寻找最近的/通配符
+					end := 0
+					for end < len(path) && path[end] != '/' {
+						end++
+					}
+
+					// Save param value
+					if params != nil {
+						if value.params == nil {
+							value.params = params
+						}
+						// tip:在预分配slice中扩容
+						i := len(*value.params)
+						*value.params = (*value.params)[:i+1]
+						val := path[:end]
+						if unescape {
+							if v, err := url.QueryUnescape(val); err == nil {
+								val = v
+							}
+						}
+						(*value.params)[i] = Param{
+							Key:   n.path[1:],
+							Value: val,
+						}
+					}
+
+					// we need to go deeper!
+					if end < len(path) {
+						if len(n.children) > 0 {
+							path = path[end:]
+							n = n.children[0]
+							continue walk
+						}
+
+						value.tsr = len(path) == end+1
+						return
+					}
+
+					// 如果是以参数节点结束
+					if value.handlers = n.handlers; value.handlers != nil {
+						value.fullPath = n.fullPath
+						return
+					}
+					if len(n.children) == 1 {
+						// No handle found. Check if a handle for this path + a
+						// trailing slash exists for TSR recommendation
+						n = n.children[0]
+						value.tsr = n.path == "/" && n.handlers != nil
+					}
+					return
+
+				case catchAll:
+					// Save param value
+					if params != nil {
+						if value.params == nil {
+							value.params = params
+						}
+						// Expand slice within preallocated capacity
+						// tip:在预分配slice中扩容
+						i := len(*value.params)
+						*value.params = (*value.params)[:i+1]
+						val := path
+						if unescape {
+							if v, err := url.QueryUnescape(path); err == nil {
+								val = v
+							}
+						}
+						(*value.params)[i] = Param{
+							Key:   n.path[2:],
+							Value: val,
+						}
+					}
+
+					value.handlers = n.handlers
+					value.fullPath = n.fullPath
+					return
+
+				default:
+					panic("invalid node type")
+				}
+			}
+		}
+
+		if path == prefix {
+			// We should have reached the node containing the handle.
+			// Check if this node has a handle registered.
+			// tip: 寻找到指定节点,返回
+			if value.handlers = n.handlers; value.handlers != nil {
+				value.fullPath = n.fullPath
+				return
+			}
+
+			// If there is no handle for this route, but this route has a
+			// wildcard child, there must be a handle for this path with an
+			// additional trailing slash
+			// tip:
+			if path == "/" && n.wildChild && n.nType != root {
+				value.tsr = true
+				return
+			}
+
+			// No handle found. Check if a handle for this path + a
+			// trailing slash exists for trailing slash recommendation
+			for i, c := range []byte(n.indices) {
+				if c == '/' {
+					n = n.children[i]
+					value.tsr = (len(n.path) == 1 && n.handlers != nil) ||
+						(n.nType == catchAll && n.children[0].handlers != nil)
+					return
+				}
+			}
+
+			return
+		}
+
+		// Nothing found. We can recommend to redirect to the same URL with an
+		// extra trailing slash if a leaf exists for that path
+		value.tsr = (path == "/") ||
+			(len(prefix) == len(path)+1 && prefix[len(path)] == '/' &&
+				path == prefix[:len(prefix)-1] && n.handlers != nil)
+		return
 	}
-	return i
 }
 
 // Increments priority of the given child and reorders if necessary
@@ -306,6 +444,23 @@ func (n *node) incrementChildPrio(pos int) int {
 	return newPos
 }
 
+func min(a, b int) int {
+	if a <= b {
+		return a
+	}
+	return b
+}
+
+// 最长公共前缀
+func longestCommonPrefix(a, b string) int {
+	i := 0
+	max := min(len(a), len(b))
+	for i < max && a[i] == b[i] {
+		i++
+	}
+	return i
+}
+
 func findWildcard(path string) (wildcard string, i int, valid bool) {
 	// Find start
 	for start, c := range []byte(path) {
@@ -328,11 +483,3 @@ func findWildcard(path string) (wildcard string, i int, valid bool) {
 	}
 	return "", -1, false
 }
-
-type nodeValue struct {
-	handlers HandlersChain
-	params   *Params
-	tsr      bool
-	fullPath string
-}
-

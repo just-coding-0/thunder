@@ -12,6 +12,7 @@ type Context struct {
 	Writer    ResponseWriter
 
 	Params   Params
+	params   *Params
 	handlers HandlersChain
 	fullPath string
 
@@ -22,16 +23,6 @@ type Context struct {
 	Keys map[string]interface{}
 
 	index    int8
-}
-
-func newContext(request *http.Request, res responseWriter) *Context {
-	return &Context{
-		writermem: res,
-		Request:   request,
-		Params:    Params{},
-		Writer:    &res,
-		Keys:      make(map[string]interface{},10),
-	}
 }
 
 type Param struct {
@@ -56,6 +47,7 @@ func (ps Params) ByName(name string) (va string) {
 }
 
 func (c *Context) Next() {
+	c.index++
 	for c.index < int8(len(c.handlers)) {
 		c.handlers[c.index](c)
 		c.index++
@@ -89,4 +81,16 @@ func (c *Context) render(code int, r render.Render) {
 
 func (c *Context) JSON(code int, obj interface{}) {
 	c.render(code, render.JSON{Data: obj})
+}
+
+func (c *Context) reset() {
+	c.Writer = &c.writermem
+	c.Params = c.Params[0:0]
+	c.handlers = nil
+	c.index = -1
+
+	c.fullPath = ""
+	c.Keys = nil
+	c.queryCache = nil
+	*c.params = (*c.params)[0:0]
 }
