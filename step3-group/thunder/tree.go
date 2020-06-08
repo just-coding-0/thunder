@@ -1,7 +1,3 @@
-// Copyright 2020 just-codeding-0 . All rights reserved.
-// Use of this source code is governed by a MIT-style
-// license that can be found in the LICENSE file.
-
 package thunder
 
 import (
@@ -366,7 +362,6 @@ walk:
 						if len(val) > 0  && val[0] == '/'{
 							val = val[1:]
 						}
-
 						(*value.params)[i] = Param{
 							Key:   n.path[2:],
 							Value: val,
